@@ -5,7 +5,14 @@ import numpy as np
 from copy import deepcopy
 import torch.nn.functional as F
 
-env = gym.make('CartPole-v1')
+seed = 0
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+# env = gym.make('CartPole-v1')
+env = gym.make('LunarLander-v2')
 
 def random_policy(obs, command):
     return np.random.randint(env.action_space.n)
@@ -36,41 +43,55 @@ def visualise_agent(policy, command, n=5):
         env.close()
     except KeyboardInterrupt:
         env.close()
-        
+
 #Behaviour function - Neural Network
 class FCNN_AGENT(torch.nn.Module):
     def __init__(self, command_scale):
         super().__init__()
         hidden_size=64
         self.command_scale=command_scale
-        self.observation_embedding = torch.nn.Sequential(
-            torch.nn.Linear(np.prod(env.observation_space.shape), hidden_size),
-            torch.nn.Sigmoid()
-        )
-        self.command_embedding = torch.nn.Sequential(
-            torch.nn.Linear(2, hidden_size),
-            torch.nn.Sigmoid()
-        )
+        # self.observation_embedding = torch.nn.Sequential(
+        #     torch.nn.Linear(np.prod(env.observation_space.shape), hidden_size),
+        #     torch.nn.Sigmoid()
+        # )
+        # self.command_embedding = torch.nn.Sequential(
+        #     torch.nn.Linear(2, hidden_size),
+        #     torch.nn.Sigmoid()
+        # )
+        # self.to_output = torch.nn.Sequential(
+        #     torch.nn.Linear(hidden_size, hidden_size),
+        #     torch.nn.ReLU(),
+        #     torch.nn.Linear(hidden_size, env.action_space.n)
+        # )
+
         self.to_output = torch.nn.Sequential(
+            torch.nn.Linear(np.prod(env.observation_space.shape) + 2, hidden_size),
+            torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, hidden_size),
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, env.action_space.n)
         )
-    
+
     def forward(self, observation, command):
-        obs_emebdding = self.observation_embedding(observation)
-        cmd_embedding = self.command_embedding(command*self.command_scale)
-        embedding = torch.mul(obs_emebdding, cmd_embedding)
-        action_prob_logits = self.to_output(embedding)
+        # obs_emebdding = self.observation_embedding(observation)
+        # cmd_embedding = self.command_embedding(command*self.command_scale)
+        # embedding = torch.mul(obs_emebdding, cmd_embedding)
+        # action_prob_logits = self.to_output(embedding)
+
+        tot = torch.cat((observation, command * self.command_scale), dim=1)
+        action_prob_logits = self.to_output(tot)
+
         return action_prob_logits
-    
+
     def create_optimizer(self, lr):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        # self.optimizer = torch.optim.RMSprop(self.parameters())
 
 #Full the replay buffer with more experience
 def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=100, log_to_tensorboard=True):
     global i_episode
     init_replay_buffer = deepcopy(replay_buffer)
+    replay_buffer = sorted(replay_buffer, key=lambda x:x['return'])[-(replay_size - (n_episodes // 2)):]
     try:
         for _ in range(n_episodes):
             command = sample_command(init_replay_buffer, last_few)
@@ -84,11 +105,11 @@ def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=
             while not done:
                 action = policy(torch.tensor([observation]).double(), torch.tensor([command]).double())
                 new_observation, reward, done, info = env.step(action)
-                
+
                 episode_mem['observation'].append(observation)
                 episode_mem['action'].append(action)
                 episode_mem['reward'].append(reward)
-                
+
                 observation=new_observation
                 command[0]-= reward
                 command[1] = max(1, command[1]-1)
@@ -128,6 +149,7 @@ def train_net(policy_net, replay_buffer, n_updates=100, batch_size=64, log_to_te
         for b in range(batch_size):
             sample_episode = np.random.randint(0, len(replay_buffer))
             sample_t1 = np.random.randint(0, len(replay_buffer[sample_episode]['observation']))
+            # sample_t1 = 0
             sample_t2 = len(replay_buffer[sample_episode]['observation'])
             ##sample_t2 = np.random.randint(sample_t1+1, len(replay_buffer[sample_episode]['observation'])+1)
             sample_horizon = sample_t2-sample_t1
@@ -173,17 +195,28 @@ def create_stochastic_policy(policy_network):
 i_episode=0 #number of episodes trained so far
 i_updates=0 #number of parameter updates to the neural network so far
 replay_buffer = []
-log_to_tensorboard = True 
+log_to_tensorboard = True
 
 ## HYPERPARAMS
-replay_size = 700
+# paper
+# batch_size: [512, 768, 1024, 1536, 2048]
+# horizon_scale: [0.01, 0.015, 0.02, 0.025, 0.03]
+# last_few: [25, 50, 75, 100]
+# learning_rate: numpy. logspace(−4, −2, num = 101)
+# n_episodes_per_iter: [10, 20, 30, 40]
+# n_updates_per_iter: [100, 150, 200, 250, 300]
+# n_warm_up_episodes: [10, 30, 50]
+# replay_size: [300, 400, 500, 600, 700]
+# return_scale: [0.01, 0.015, 0.02, 0.025, 0.03]
+
+replay_size = 300
 last_few = 50
-batch_size = 256
+batch_size = 512
 n_warm_up_episodes = 50
-n_episodes_per_iter = 25
-n_updates_per_iter = 15
-command_scale = 0.02
-lr = 0.001
+n_episodes_per_iter = 50
+n_updates_per_iter = 150
+command_scale = 1.0 / 300.0
+lr = 1e-2
 
 # Initialize behaviour function
 agent = FCNN_AGENT(command_scale).double()
@@ -194,7 +227,7 @@ greedy_policy = create_greedy_policy(agent)
 
 # SET UP TRAINING VISUALISATION
 if log_to_tensorboard: from torch.utils.tensorboard import SummaryWriter
-if log_to_tensorboard: writer = SummaryWriter() # we will use this to show our models performance on a graph using tensorboard
+if log_to_tensorboard: writer = SummaryWriter(comment=input("Enter run description:")) # we will use this to show our models performance on a graph using tensorboard
 
 #Collect warm up episodes
 replay_buffer = collect_experience(random_policy, replay_buffer, replay_size, last_few, n_warm_up_episodes, log_to_tensorboard)
