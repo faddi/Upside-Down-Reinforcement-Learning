@@ -5,6 +5,14 @@ import numpy as np
 from copy import deepcopy
 import torch.nn.functional as F
 
+seed = 10
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 env = gym.make('LunarLander-v2')
 
 def random_policy(obs, command):
@@ -53,12 +61,12 @@ class FCNN_AGENT(torch.nn.Module):
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, hidden_size),
             torch.nn.ReLU(),
-            torch.nn.Linear(hidden_size, hidden_size),
-            torch.nn.ReLU(),
+            # torch.nn.Linear(hidden_size, hidden_size),
+            # torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, env.action_space.n)
         )
 
-        # input -> 32 -> 64 -> 64 -> 64-> out
+        # input -> 32 -> 64 -> 64 -> out
 
     def forward(self, observation, command):
         obs_emebdding = self.observation_embedding(observation)
@@ -190,7 +198,7 @@ log_to_tensorboard = True
 # replay_size: [300, 400, 500, 600, 700]
 # return_scale: [0.01, 0.015, 0.02, 0.025, 0.03]
 
-replay_size = 4000
+replay_size = 500
 last_few = 50
 batch_size = 512
 n_warm_up_episodes = 30
@@ -208,7 +216,7 @@ greedy_policy = create_greedy_policy(agent)
 
 # SET UP TRAINING VISUALISATION
 if log_to_tensorboard: from torch.utils.tensorboard import SummaryWriter
-if log_to_tensorboard: writer = SummaryWriter(comment="32 64 64 64") # we will use this to show our models performance on a graph using tensorboard
+if log_to_tensorboard: writer = SummaryWriter(comment="32 64 64") # we will use this to show our models performance on a graph using tensorboard
 
 import json
 
