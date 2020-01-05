@@ -5,7 +5,7 @@ import numpy as np
 from copy import deepcopy
 import torch.nn.functional as F
 
-env = gym.make('CartPole-v1')
+env = gym.make('LunarLander-v2')
 
 def random_policy(obs, command):
     return np.random.randint(env.action_space.n)
@@ -33,7 +33,7 @@ def visualise_agent(policy, command, n=5):
         env.close()
     except KeyboardInterrupt:
         env.close()
-        
+
 #Behaviour function - Neural Network
 class FCNN_AGENT(torch.nn.Module):
     def __init__(self, command_scale):
@@ -41,26 +41,32 @@ class FCNN_AGENT(torch.nn.Module):
         hidden_size=64
         self.command_scale=command_scale
         self.observation_embedding = torch.nn.Sequential(
-            torch.nn.Linear(np.prod(env.observation_space.shape), hidden_size),
+            torch.nn.Linear(np.prod(env.observation_space.shape), hidden_size // 2),
             torch.nn.Sigmoid()
         )
         self.command_embedding = torch.nn.Sequential(
-            torch.nn.Linear(2, hidden_size),
+            torch.nn.Linear(2, hidden_size // 2),
             torch.nn.Sigmoid()
         )
         self.to_output = torch.nn.Sequential(
+            torch.nn.Linear(hidden_size // 2, hidden_size),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_size, hidden_size),
+            torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, hidden_size),
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, env.action_space.n)
         )
-    
+
+        # input -> 32 -> 64 -> 64 -> 64-> out
+
     def forward(self, observation, command):
         obs_emebdding = self.observation_embedding(observation)
         cmd_embedding = self.command_embedding(command*self.command_scale)
         embedding = torch.mul(obs_emebdding, cmd_embedding)
         action_prob_logits = self.to_output(embedding)
         return action_prob_logits
-    
+
     def create_optimizer(self, lr):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
@@ -81,11 +87,11 @@ def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=
             while not done:
                 action = policy(torch.tensor([observation]).double(), torch.tensor([command]).double())
                 new_observation, reward, done, info = env.step(action)
-                
+
                 episode_mem['observation'].append(observation)
                 episode_mem['action'].append(action)
                 episode_mem['reward'].append(reward)
-                
+
                 observation=new_observation
                 command[0]-= reward
                 command[1] = max(1, command[1]-1)
@@ -170,16 +176,27 @@ def create_stochastic_policy(policy_network):
 i_episode=0 #number of episodes trained so far
 i_updates=0 #number of parameter updates to the neural network so far
 replay_buffer = []
-log_to_tensorboard = True 
+log_to_tensorboard = True
 
 ## HYPERPARAMS
-replay_size = 700
+
+# batch_size: [512, 768, 1024, 1536, 2048]
+# horizon_scale: [0.01, 0.015, 0.02, 0.025, 0.03]
+# last_few: [25, 50, 75, 100]
+# learning_rate: numpy. logspace(−4, −2, num = 101)
+# n_episodes_per_iter: [10, 20, 30, 40]
+# n_updates_per_iter: [100, 150, 200, 250, 300]
+# n_warm_up_episodes: [10, 30, 50]
+# replay_size: [300, 400, 500, 600, 700]
+# return_scale: [0.01, 0.015, 0.02, 0.025, 0.03]
+
+replay_size = 4000
 last_few = 50
-batch_size = 256
-n_warm_up_episodes = 50
-n_episodes_per_iter = 25
-n_updates_per_iter = 15
-command_scale = 0.02
+batch_size = 512
+n_warm_up_episodes = 30
+n_episodes_per_iter = 30
+n_updates_per_iter = 200
+command_scale = 0.01
 lr = 0.001
 
 # Initialize behaviour function
@@ -191,15 +208,33 @@ greedy_policy = create_greedy_policy(agent)
 
 # SET UP TRAINING VISUALISATION
 if log_to_tensorboard: from torch.utils.tensorboard import SummaryWriter
-if log_to_tensorboard: writer = SummaryWriter() # we will use this to show our models performance on a graph using tensorboard
+if log_to_tensorboard: writer = SummaryWriter(comment="32 64 64 64") # we will use this to show our models performance on a graph using tensorboard
+
+import json
+
+def readlr():
+  global lr
+  with open('data.json') as json_file:
+    data = json.load(json_file)
+    new_lr = data['lr']
+    if new_lr != lr:
+      print(f"new lr! {lr} -> {new_lr}")
+      lr = new_lr
+    for g in agent.optimizer.param_groups:
+      g['lr'] = lr
+
 
 #Collect warm up episodes
+readlr()
 replay_buffer = collect_experience(random_policy, replay_buffer, replay_size, last_few, n_warm_up_episodes, log_to_tensorboard)
 train_net(agent, replay_buffer, n_updates_per_iter, batch_size, log_to_tensorboard)
+
 
 #Collect experience and train behaviour function for given number of iterations
 n_iters = 1000
 for i in range(n_iters):
+    readlr()
+    print(f"iter: {i} lr: {lr}")
     replay_buffer = collect_experience(stochastic_policy, replay_buffer, replay_size, last_few, n_episodes_per_iter, log_to_tensorboard)
     train_net(agent, replay_buffer, n_updates_per_iter, batch_size, log_to_tensorboard)
 
