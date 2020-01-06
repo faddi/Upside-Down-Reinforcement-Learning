@@ -81,6 +81,7 @@ class FCNN_AGENT(torch.nn.Module):
 #Fill the replay buffer with more experience
 def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=100, log_to_tensorboard=True):
     global i_episode
+    global i_step
     init_replay_buffer = deepcopy(replay_buffer)
     try:
         for _ in range(n_episodes):
@@ -95,6 +96,7 @@ def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=
             while not done:
                 action = policy(torch.tensor([observation]).double(), torch.tensor([command]).double())
                 new_observation, reward, done, info = env.step(action)
+                i_step += 1
 
                 episode_mem['observation'].append(observation)
                 episode_mem['action'].append(action)
@@ -108,6 +110,7 @@ def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=
             replay_buffer.append(episode_mem)
             i_episode+=1
             if log_to_tensorboard: writer.add_scalar('Return/Episode', sum(episode_mem['reward']), i_episode)    # write loss to a graph
+            if log_to_tensorboard: writer.add_scalar('Stats/Total num steps', i_step, i_episode)    # write loss to a graph
             print("Episode {} finished after {} timesteps. Return = {}".format(i_episode, len(episode_mem['observation']), sum(episode_mem['reward'])))
         env.close()
     except KeyboardInterrupt:
@@ -182,6 +185,7 @@ def create_stochastic_policy(policy_network):
 
 #Initialize vars
 i_episode=0 #number of episodes trained so far
+i_step=0 #number of episodes trained so far
 i_updates=0 #number of parameter updates to the neural network so far
 replay_buffer = []
 log_to_tensorboard = True
@@ -198,14 +202,14 @@ log_to_tensorboard = True
 # replay_size: [300, 400, 500, 600, 700]
 # return_scale: [0.01, 0.015, 0.02, 0.025, 0.03]
 
-replay_size = 500
+replay_size = 300
 last_few = 50
 batch_size = 512
 n_warm_up_episodes = 30
-n_episodes_per_iter = 30
+n_episodes_per_iter = 50
 n_updates_per_iter = 200
 command_scale = 0.01
-lr = 0.001
+lr = 0.005
 
 # Initialize behaviour function
 agent = FCNN_AGENT(command_scale).double()
