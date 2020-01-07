@@ -190,6 +190,19 @@ replay_buffer = []
 log_to_tensorboard = True
 
 ## HYPERPARAMS
+
+# Network architecture (indicating number of units per layer): [[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
+# [64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]]
+# batch_size: [512, 768, 1024, 1536, 2048]
+# horizon_scale: [0.01, 0.015, 0.02, 0.025, 0.03]
+# last_few: [25, 50, 75, 100]
+# learning_rate: numpy. logspace(−4, −2, num = 101)
+# n_episodes_per_iter: [10, 20, 30, 40]
+# n_updates_per_iter: [100, 150, 200, 250, 300]
+# n_warm_up_episodes: [10, 30, 50]
+# replay_size: [300, 400, 500, 600, 700]
+# return_scale: [0.01, 0.015, 0.02, 0.025, 0.03]
+
 replay_size = 700
 last_few = 50
 batch_size = 256
