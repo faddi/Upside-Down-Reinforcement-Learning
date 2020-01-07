@@ -4,8 +4,25 @@ import torch
 import numpy as np
 from copy import deepcopy
 import torch.nn.functional as F
+import random
 
-env = gym.make('CartPole-v1')
+def seed_everything(env, seed=10):
+  seed = 10
+  random.seed(seed)
+  np.random.seed(seed)
+  torch.manual_seed(seed)
+  torch.backends.cudnn.deterministic = True
+  torch.backends.cudnn.benchmark = False
+  env.seed(seed)
+
+
+# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+env = gym.make('LunarLander-v2')
+# env = gym.make('CartPole-v1')
+
+seed_everything(env, seed=10)
+
 
 def random_policy(obs, command):
     return np.random.randint(env.action_space.n)
@@ -33,7 +50,7 @@ def visualise_agent(policy, command, n=5):
         env.close()
     except KeyboardInterrupt:
         env.close()
-        
+
 #Behaviour function - Neural Network
 class FCNN_AGENT(torch.nn.Module):
     def __init__(self, command_scale):
@@ -53,14 +70,14 @@ class FCNN_AGENT(torch.nn.Module):
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, env.action_space.n)
         )
-    
+
     def forward(self, observation, command):
         obs_emebdding = self.observation_embedding(observation)
         cmd_embedding = self.command_embedding(command*self.command_scale)
         embedding = torch.mul(obs_emebdding, cmd_embedding)
         action_prob_logits = self.to_output(embedding)
         return action_prob_logits
-    
+
     def create_optimizer(self, lr):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
@@ -81,11 +98,11 @@ def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=
             while not done:
                 action = policy(torch.tensor([observation]).double(), torch.tensor([command]).double())
                 new_observation, reward, done, info = env.step(action)
-                
+
                 episode_mem['observation'].append(observation)
                 episode_mem['action'].append(action)
                 episode_mem['reward'].append(reward)
-                
+
                 observation=new_observation
                 command[0]-= reward
                 command[1] = max(1, command[1]-1)
@@ -170,7 +187,7 @@ def create_stochastic_policy(policy_network):
 i_episode=0 #number of episodes trained so far
 i_updates=0 #number of parameter updates to the neural network so far
 replay_buffer = []
-log_to_tensorboard = True 
+log_to_tensorboard = True
 
 ## HYPERPARAMS
 replay_size = 700
