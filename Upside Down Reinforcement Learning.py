@@ -5,6 +5,9 @@ import numpy as np
 from copy import deepcopy
 import torch.nn.functional as F
 import random
+import time
+from tqdm import tqdm
+from collections import deque
 
 def seed_everything(env, seed=10):
   seed = 10
@@ -57,32 +60,43 @@ class FCNN_AGENT(torch.nn.Module):
         super().__init__()
         hidden_size=64
         self.command_scale=command_scale
-        self.observation_embedding = torch.nn.Sequential(
-            torch.nn.Linear(np.prod(env.observation_space.shape), hidden_size),
-            torch.nn.Sigmoid()
-        )
-        self.command_embedding = torch.nn.Sequential(
-            torch.nn.Linear(2, hidden_size),
-            torch.nn.Sigmoid()
-        )
+        # self.observation_embedding = torch.nn.Sequential(
+        #     torch.nn.Linear(np.prod(env.observation_space.shape), hidden_size),
+        #     torch.nn.Sigmoid()
+        # )
+        # self.command_embedding = torch.nn.Sequential(
+        #     torch.nn.Linear(2, hidden_size),
+        #     torch.nn.Sigmoid()
+        # )
         self.to_output = torch.nn.Sequential(
+            torch.nn.Linear(np.prod(env.observation_space.shape) + 2, hidden_size),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_size, hidden_size),
+            torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, hidden_size),
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, env.action_space.n)
         )
 
     def forward(self, observation, command):
-        obs_emebdding = self.observation_embedding(observation)
-        cmd_embedding = self.command_embedding(command*self.command_scale)
-        embedding = torch.mul(obs_emebdding, cmd_embedding)
-        action_prob_logits = self.to_output(embedding)
+        # obs_emebdding = self.observation_embedding(observation)
+        # cmd_embedding = self.command_embedding(command*self.command_scale)
+        # embedding = torch.mul(obs_emebdding, cmd_embedding)
+        # action_prob_logits = self.to_output(embedding)
+
+        tot = torch.cat((observation, command * self.command_scale), dim=1)
+        action_prob_logits = self.to_output(tot)
+
+
         return action_prob_logits
 
     def create_optimizer(self, lr):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        # self.optimizer = torch.optim.AdamW(self.parameters(), lr=lr)
+        # self.optimizer = torch.optim.SGD(self.parameters(), lr=lr)
 
 #Fill the replay buffer with more experience
-def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=100, log_to_tensorboard=True):
+def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=100, log_to_tensorboard=True, latest_experiences_buffer=deque()):
     global i_episode
     init_replay_buffer = deepcopy(replay_buffer)
     try:
@@ -108,7 +122,9 @@ def collect_experience(policy, replay_buffer, replay_size, last_few, n_episodes=
                 command[1] = max(1, command[1]-1)
             episode_mem['return']=sum(episode_mem['reward'])
             episode_mem['episode_len']=len(episode_mem['observation'])
+            episode_mem['reward'] = np.array(episode_mem['reward'])
             replay_buffer.append(episode_mem)
+            latest_experiences_buffer.append(episode_mem)
             i_episode+=1
             if log_to_tensorboard: writer.add_scalar('Return/Episode', sum(episode_mem['reward']), i_episode)    # write loss to a graph
             print("Episode {} finished after {} timesteps. Return = {}".format(i_episode, len(episode_mem['observation']), sum(episode_mem['reward'])))
@@ -127,31 +143,103 @@ def sample_command(replay_buffer, last_few):
         lengths = [mem['episode_len'] for mem in command_samples]
         returns = [mem['return'] for mem in command_samples]
         mean_return, std_return = np.mean(returns), np.std(returns)
+        # mean_return = mean_return + abs((mean_return) * 0.1)
         command_horizon = np.mean(lengths)
         desired_reward = np.random.uniform(mean_return, mean_return+std_return)
         return [desired_reward, command_horizon]
 
+def sample_from_buf(buffer):
+    # episodes = np.random.choice(replay_buffer, size=batch_size)
+    # fn = np.vectorize(lambda q: np.array(q['observation']), otypes=[np.ndarray])
+    # observations = fn(episodes)
+
+    # episodes = np.random.choice(replay_buffer, size=batch_size)
+
+    # for b, episode in enumerate(episodes):
+    #     sample_t1 = np.random.randint(0, len(episode['observation']))
+    #     sample_t2 = len(episode['observation'])
+    #     sample_horizon = sample_t2-sample_t1
+    #     sample_mem = episode['observation'][sample_t1]
+    #     # sample_desired_reward = episode['reward'][sample_t1:sample_t2].sum()
+    #     sample_desired_reward = sum(episode['reward'][sample_t1:sample_t2])
+    #     network_input = np.append(sample_mem, [sample_desired_reward, sample_horizon])
+    #     label = episode['action'][sample_t1]
+    #     batch_observations[b] = sample_mem
+    #     batch_commands[b] = [sample_desired_reward, sample_horizon]
+    #     batch_label[b] = label
+
+    sample_episode = np.random.randint(0, len(buffer))
+    sample_t1 = np.random.randint(0, len(buffer[sample_episode]['observation']))
+    # sample_t1 = 0
+    sample_t2 = len(buffer[sample_episode]['observation'])
+    sample_horizon = sample_t2-sample_t1
+    sample_mem = buffer[sample_episode]['observation'][sample_t1]
+    sample_desired_reward = sum(buffer[sample_episode]['reward'][sample_t1:sample_t2])
+    network_input = np.append(sample_mem, [sample_desired_reward, sample_horizon])
+    label = buffer[sample_episode]['action'][sample_t1]
+    return (sample_mem, [sample_desired_reward, sample_horizon], label)
+    # batch_observations[b] = sample_mem
+    # batch_commands[b] = [sample_desired_reward, sample_horizon]
+    # batch_label[b] = label
+
+
 #Improve behviour function by training on replay buffer
-def train_net(policy_net, replay_buffer, n_updates=100, batch_size=64, log_to_tensorboard=True):
+def train_net(policy_net, replay_buffer, n_updates=100, batch_size=64, log_to_tensorboard=True, latest_experiences_buffer=deque()):
     global i_updates
     all_costs = []
+    # for i in tqdm(range(n_updates)):
+    learning = True
+    prev_loss = float('inf')
+    running_costs = []
+
+    # while learning:
     for i in range(n_updates):
         batch_observations = np.zeros((batch_size, np.prod(env.observation_space.shape)))
         batch_commands = np.zeros((batch_size, 2))
         batch_label = np.zeros((batch_size))
+
+        # episodes = np.random.choice(replay_buffer, size=batch_size)
+        # fn = np.vectorize(lambda q: np.array(q['observation']), otypes=[np.ndarray])
+        # observations = fn(episodes)
+
+        # episodes = np.random.choice(replay_buffer, size=batch_size)
+
+        # for b, episode in enumerate(episodes):
+        #     sample_t1 = np.random.randint(0, len(episode['observation']))
+        #     sample_t2 = len(episode['observation'])
+        #     sample_horizon = sample_t2-sample_t1
+        #     sample_mem = episode['observation'][sample_t1]
+        #     # sample_desired_reward = episode['reward'][sample_t1:sample_t2].sum()
+        #     sample_desired_reward = sum(episode['reward'][sample_t1:sample_t2])
+        #     network_input = np.append(sample_mem, [sample_desired_reward, sample_horizon])
+        #     label = episode['action'][sample_t1]
+        #     batch_observations[b] = sample_mem
+        #     batch_commands[b] = [sample_desired_reward, sample_horizon]
+        #     batch_label[b] = label
+
+
         for b in range(batch_size):
-            sample_episode = np.random.randint(0, len(replay_buffer))
-            sample_t1 = np.random.randint(0, len(replay_buffer[sample_episode]['observation']))
-            sample_t2 = len(replay_buffer[sample_episode]['observation'])
-            ##sample_t2 = np.random.randint(sample_t1+1, len(replay_buffer[sample_episode]['observation'])+1)
-            sample_horizon = sample_t2-sample_t1
-            sample_mem = replay_buffer[sample_episode]['observation'][sample_t1]
-            sample_desired_reward = sum(replay_buffer[sample_episode]['reward'][sample_t1:sample_t2])
-            network_input = np.append(sample_mem, [sample_desired_reward, sample_horizon])
-            label = replay_buffer[sample_episode]['action'][sample_t1]
-            batch_observations[b] = sample_mem
-            batch_commands[b] = [sample_desired_reward, sample_horizon]
+            if b > batch_size // 2:
+                mem, command, label = sample_from_buf(replay_buffer)
+            else:
+                mem, command, label = sample_from_buf(latest_experiences_buffer)
+            batch_observations[b] = mem
+            batch_commands[b] = command
             batch_label[b] = label
+
+        # for b in range(batch_size):
+        #     sample_episode = np.random.randint(0, len(replay_buffer))
+        #     sample_t1 = np.random.randint(0, len(replay_buffer[sample_episode]['observation']))
+        #     sample_t2 = len(replay_buffer[sample_episode]['observation'])
+        #     sample_horizon = sample_t2-sample_t1
+        #     sample_mem = replay_buffer[sample_episode]['observation'][sample_t1]
+        #     sample_desired_reward = sum(replay_buffer[sample_episode]['reward'][sample_t1:sample_t2])
+        #     network_input = np.append(sample_mem, [sample_desired_reward, sample_horizon])
+        #     label = replay_buffer[sample_episode]['action'][sample_t1]
+        #     batch_observations[b] = sample_mem
+        #     batch_commands[b] = [sample_desired_reward, sample_horizon]
+        #     batch_label[b] = label
+
         batch_observations = torch.tensor(batch_observations).double()
         batch_commands = torch.tensor(batch_commands).double()
         batch_label = torch.tensor(batch_label).long()
@@ -160,9 +248,20 @@ def train_net(policy_net, replay_buffer, n_updates=100, batch_size=64, log_to_te
         if log_to_tensorboard: writer.add_scalar('Cost/NN update', cost.item() , i_updates)    # write loss to a graph
         all_costs.append(cost.item())
         cost.backward()
+
+        running_costs.append(cost.item())
+
+        # if (i_updates + 1) % n_updates == 0:
+        #     l = np.mean(running_costs)
+        #     learning = (prev_loss - l) > 1e-5
+        #     print(f"l {l} prev_loss {prev_loss}, diff {prev_loss - l}, learning: {learning}")
+        #     prev_loss = l
+        #     running_costs.clear()
+
         policy_net.optimizer.step()
         policy_net.optimizer.zero_grad()
         i_updates+=1
+
     return np.mean(all_costs)
 
 #Return a greedy policy from a given network
@@ -203,14 +302,14 @@ log_to_tensorboard = True
 # replay_size: [300, 400, 500, 600, 700]
 # return_scale: [0.01, 0.015, 0.02, 0.025, 0.03]
 
-replay_size = 700
-last_few = 50
-batch_size = 256
-n_warm_up_episodes = 50
-n_episodes_per_iter = 25
-n_updates_per_iter = 15
-command_scale = 0.02
-lr = 0.001
+replay_size = 100
+last_few = 10
+batch_size = 1024
+n_warm_up_episodes = 1
+n_episodes_per_iter = 20
+n_updates_per_iter = 100
+command_scale = 0.01
+lr = 0.01
 
 # Initialize behaviour function
 agent = FCNN_AGENT(command_scale).double()
@@ -220,18 +319,24 @@ stochastic_policy = create_stochastic_policy(agent)
 greedy_policy = create_greedy_policy(agent)
 
 # SET UP TRAINING VISUALISATION
-if log_to_tensorboard: from torch.utils.tensorboard import SummaryWriter
-if log_to_tensorboard: writer = SummaryWriter() # we will use this to show our models performance on a graph using tensorboard
+if log_to_tensorboard:
+     from torch.utils.tensorboard import SummaryWriter
+     writer = SummaryWriter() # we will use this to show our models performance on a graph using tensorboard
 
 #Collect warm up episodes
-replay_buffer = collect_experience(random_policy, replay_buffer, replay_size, last_few, n_warm_up_episodes, log_to_tensorboard)
-train_net(agent, replay_buffer, n_updates_per_iter, batch_size, log_to_tensorboard)
+latest_experiences_buffer = deque(maxlen=replay_size)
+replay_buffer = collect_experience(random_policy, replay_buffer, replay_size, last_few, n_warm_up_episodes, log_to_tensorboard, latest_experiences_buffer=latest_experiences_buffer)
+train_net(agent, replay_buffer, n_updates_per_iter, batch_size, log_to_tensorboard, latest_experiences_buffer)
+
+
+# for i in range(replay_size):
+#     replay_buffer = collect_experience(stochastic_policy, replay_buffer, replay_size, last_few, n_warm_up_episodes, False, latest_experiences_buffer=latest_experiences_buffer)
 
 #Collect experience and train behaviour function for given number of iterations
-n_iters = 1000
+n_iters = 10000
 for i in range(n_iters):
-    replay_buffer = collect_experience(stochastic_policy, replay_buffer, replay_size, last_few, n_episodes_per_iter, log_to_tensorboard)
-    train_net(agent, replay_buffer, n_updates_per_iter, batch_size, log_to_tensorboard)
+    replay_buffer = collect_experience(stochastic_policy, replay_buffer, replay_size, last_few, n_episodes_per_iter, log_to_tensorboard, latest_experiences_buffer=latest_experiences_buffer)
+    train_net(agent, replay_buffer, n_updates_per_iter, batch_size, log_to_tensorboard, latest_experiences_buffer=latest_experiences_buffer)
 
 #Visualise final trained agent with greedy policy
 visualise_agent(greedy_policy, command=[150, 400], n=5)

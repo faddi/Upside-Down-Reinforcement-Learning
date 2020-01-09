@@ -1,5 +1,8 @@
+
 # Upside-Down-Reinforcement-Learning
-Implementation of Schmidhuber's Upside Down Reinforcement Learning paper
+
+This branch no longer follows the paper.
+
 
 Link to paper with theory: https://arxiv.org/pdf/1912.02875.pdf
 
