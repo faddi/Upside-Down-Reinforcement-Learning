@@ -21,8 +21,8 @@ def seed_everything(env, seed=10):
 
 # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-env = gym.make('LunarLander-v2')
-# env = gym.make('CartPole-v1')
+# env = gym.make('LunarLander-v2')
+env = gym.make('CartPole-v1')
 
 seed_everything(env, seed=10)
 
