@@ -18,11 +18,31 @@ def seed_everything(env, seed=10):
   torch.backends.cudnn.benchmark = False
   env.seed(seed)
 
+class DelayRewardsWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.env = env
+        self._total_reward = 0.0
+
+    def step(self, action):
+        next_state, reward, done, info = self.env.step(action)
+        self._total_reward += reward
+        r = 0
+        if done:
+          r += self._total_reward
+          self._total_reward = 0.0
+        return next_state, r, done, info
+
+    def reset(self, *args):
+        self._total_reward = 0.0
+        return self.env.reset(*args)
 
 # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-# env = gym.make('LunarLander-v2')
-env = gym.make('CartPole-v1')
+env = gym.make('LunarLander-v2')
+# env = gym.make('CartPole-v1')
+
+
 
 seed_everything(env, seed=10)
 
